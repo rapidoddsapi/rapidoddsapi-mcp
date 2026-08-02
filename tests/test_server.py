@@ -108,6 +108,22 @@ class TestDefaults:
     def test_wide_starts_from_the_region(self):
         assert list(defaults.wide_bookmakers("AFL"))[:5] == list(defaults.AU_DEFAULT)
 
+    def test_region_bookmakers_is_the_full_regional_list(self):
+        """The API has no bookmaker endpoint and does not reject bad names, so
+        without a list to hand the only way to find a feed is to guess and pay
+        for each attempt."""
+        from rapidoddsapi import AU_BOOKMAKERS, BOOKMAKERS, US_BOOKMAKERS
+
+        assert defaults.region_bookmakers("AFL") == AU_BOOKMAKERS
+        assert defaults.region_bookmakers("NFL") == US_BOOKMAKERS
+        # Soccer and tennis are priced in every region, not just Europe.
+        assert defaults.region_bookmakers("EPL") == BOOKMAKERS
+
+    def test_region_list_is_a_superset_of_the_default(self):
+        for sport in ("AFL", "NFL", "EPL"):
+            region = set(defaults.region_bookmakers(sport))
+            assert set(defaults.default_bookmakers(sport)) <= region
+
     def test_with_sharp_adds_it_once(self):
         assert defaults.SHARP_BOOKMAKER in defaults.with_sharp(["Sportsbet"])
         already = ["Pinnacle", "Sportsbet"]

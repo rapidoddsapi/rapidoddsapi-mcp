@@ -11,6 +11,7 @@ cannot see the meter has no reason to slow down.
 import os
 from collections.abc import Sequence
 
+import truststore
 from mcp.server import MCPServer
 from rapidoddsapi import RapidOddsAPI
 from rapidoddsapi import find_arbitrage as arb
@@ -28,6 +29,7 @@ from . import __version__
 from .defaults import (
     SHARP_BOOKMAKER,
     default_bookmakers,
+    region_bookmakers,
     wide_bookmakers,
     with_sharp,
 )
@@ -40,6 +42,13 @@ from .formatting import (
 )
 
 API_KEY_ENV = "RAPIDODDSAPI_API_KEY"
+
+# Verify certificates against the operating system's trust store rather than
+# the bundled one. Corporate networks and antivirus that inspect HTTPS present
+# their own certificate, which the machine trusts and a bundled store does not,
+# so without this the server installs cleanly and then fails every request with
+# CERTIFICATE_VERIFY_FAILED. Must run before the first client is built.
+truststore.inject_into_ssl()
 
 INSTRUCTIONS = """
 Odds, live scores, arbitrage and value bets from RapidOddsAPI.
@@ -58,6 +67,11 @@ Two rules that keep the cost down:
   - Leave bookmakers unset unless you need specific ones. The default is five,
     which is the cheapest useful request. Cost multiplies with both the number
     of market types and the number of bookmakers.
+
+Never guess a bookmaker or market name. An unknown one is not rejected, it
+comes back with no prices, so trying names to see which work is both slow and
+billable. list_sports(sport) returns every valid name for that sport and costs
+nothing.
 
 list_sports is free. Call it first when unsure of a sport id or a market type.
 """.strip()
@@ -147,7 +161,13 @@ def list_sports(sport: str | None = None) -> str:
 
     With no argument: every sport id, plus which of them have live scores.
     With a sport: that sport's market types, grouped into game, team and
-    player_props. Any of those keys is valid as a get_odds market_type.
+    player_props, and every bookmaker you can request for it. Any of those
+    market keys is valid as a get_odds market_type, and any of those bookmaker
+    names is valid as a get_odds bookmaker.
+
+    Call this before naming bookmakers. Unrecognised names are not an error,
+    they return no prices, so probing to find out which exist looks like a
+    sport simply having no odds and costs credits for each attempt.
 
     A sport being listed means the id is accepted, not that games are on right
     now. Out of season returns an empty result, which costs nothing.
@@ -170,7 +190,21 @@ def list_sports(sport: str | None = None) -> str:
                         lines.append(f"{group} ({len(keys)}):")
                         lines.extend(f"  {key}" for key in keys)
                         lines.append("")
-            lines.append(credit_line(0, _usage()))
+            feeds = region_bookmakers(sport)
+            lines.append(f"bookmakers you can request for {info['id']} ({len(feeds)}):")
+            lines.extend(f"  {feed}" for feed in feeds)
+            lines += [
+                "",
+                "That is the complete list of feeds for this region. A name "
+                "not on it returns no prices, so do not try other bookmaker "
+                "names to see what happens, each attempt can cost credits.",
+                "These are feeds, not brands. One feed often carries several "
+                "brands at identical prices, so the number of betting sites "
+                "behind them is larger than the number of names here.",
+                "Not every feed prices every sport or market.",
+                "",
+                credit_line(0, _usage()),
+            ]
             return "\n".join(lines)
 
         sports = client.list_sports()
@@ -213,9 +247,15 @@ def get_odds(
     no head_to_head because of the draw, so use head_to_head_3_way or
     draw_no_bet there. Get exact keys from list_sports(sport).
 
-    bookmakers defaults to five that cover the sport's region. Names are odds
-    feeds, not brands: "Ladbrokes" covers Neds, "Betmakers" covers the 26
-    brands on that feed. A brand name that is not a feed returns nothing.
+    bookmakers defaults to five that cover the sport's region. To use others,
+    take the names from list_sports(sport), which lists every feed available.
+    Never guess a name: an unknown one returns no prices rather than an error,
+    so guessing is indistinguishable from the sport having no odds, and each
+    guess can cost credits.
+
+    Names are odds feeds, not brands. "Ladbrokes" is the feed that also carries
+    Neds, "Betmakers" carries the 26 brands running on it, so a brand name that
+    is not itself a feed returns nothing.
     """
     markets = market_types or ["head_to_head"]
     books = bookmakers or default_bookmakers(sport)
