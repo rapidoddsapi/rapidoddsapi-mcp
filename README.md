@@ -48,7 +48,7 @@ It speaks stdio.
 | `get_odds(sport, market_types=, bookmakers=)` | `market_types x ceil(bookmakers / 5)` |
 | `get_results(sport, status=, include=)` | 1 |
 | `find_arbitrage(sport, market=, bookmakers=, min_profit=, stake=)` | `ceil(bookmakers / 5)` |
-| `find_value_bets(sport, market=, bookmakers=, min_edge=, sharp=)` | `ceil(bookmakers / 5)` |
+| `find_value_bets(sport, market=, bookmakers=, min_edge=, devig=)` | `ceil(bookmakers / 5)` |
 
 Credits are charged only when games come back, so a query that matches nothing
 is free. Every response ends with what it cost and what is left.
@@ -71,11 +71,20 @@ because both need books that disagree and five rarely spread far enough.
 
 ## Markets
 
-`find_arbitrage` and `find_value_bets` handle two-way markets with no line:
-`head_to_head`, its period variants, and soccer's `draw_no_bet`. Totals,
-spreads, player props and three-way markets return an error explaining why
-rather than an empty list, since "nothing found" would read as "no
-opportunities".
+`find_arbitrage` and `find_value_bets` handle any market whose bets have two
+sides: `head_to_head` and its period variants, soccer's `draw_no_bet`, totals,
+handicaps, team totals and player props. Each line is its own bet, so a totals
+market can return several results for one game.
+
+Three-way markets return an error explaining why rather than an empty list,
+since "nothing found" would read as "no opportunities".
+
+`find_value_bets` takes `devig` for where the fair price comes from. The
+default, `"all"`, de-vigs every bookmaker fetched and averages the result,
+which needs no view on which book is sharp. Naming one, `devig="Pinnacle"`,
+measures every other book against that one instead: tighter, but only on
+markets that book prices. A consensus needs four bookmakers on the same line,
+so on thin markets naming a book finds bets that averaging cannot.
 
 Market keys vary by sport. `list_sports(sport)` returns the valid ones and
 costs nothing.

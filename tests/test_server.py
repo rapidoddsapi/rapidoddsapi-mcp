@@ -78,6 +78,17 @@ class FakeClient:
     def get_usage(self):
         return self._usage
 
+    def get_sport(self, sport, markets=True):
+        return {
+            "id": sport,
+            "name": sport,
+            "markets": {
+                "game": ["head_to_head_3_way", "draw_no_bet"],
+                "team": [],
+                "player_props": [],
+            },
+        }
+
 
 @pytest.fixture
 def fake(monkeypatch):
@@ -108,21 +119,26 @@ class TestDefaults:
     def test_wide_starts_from_the_region(self):
         assert list(defaults.wide_bookmakers("AFL"))[:5] == list(defaults.AU_DEFAULT)
 
-    def test_region_bookmakers_is_the_full_regional_list(self):
+    def test_all_bookmakers_is_every_feed(self):
         """The API has no bookmaker endpoint and does not reject bad names, so
         without a list to hand the only way to find a feed is to guess and pay
         for each attempt."""
-        from rapidoddsapi import AU_BOOKMAKERS, BOOKMAKERS, US_BOOKMAKERS
+        from rapidoddsapi import BOOKMAKERS
 
-        assert defaults.region_bookmakers("AFL") == AU_BOOKMAKERS
-        assert defaults.region_bookmakers("NFL") == US_BOOKMAKERS
-        # Soccer and tennis are priced in every region, not just Europe.
-        assert defaults.region_bookmakers("EPL") == BOOKMAKERS
+        assert defaults.all_bookmakers() == BOOKMAKERS
 
-    def test_region_list_is_a_superset_of_the_default(self):
+    def test_the_list_is_not_filtered_by_region(self):
+        """Feeds price across regions, so an American book on the AFL is
+        normal and must not be hidden."""
+        from rapidoddsapi import AU_BOOKMAKERS, US_BOOKMAKERS
+
+        feeds = set(defaults.all_bookmakers())
+        assert set(AU_BOOKMAKERS) <= feeds
+        assert set(US_BOOKMAKERS) <= feeds
+
+    def test_every_default_is_a_real_feed(self):
         for sport in ("AFL", "NFL", "EPL"):
-            region = set(defaults.region_bookmakers(sport))
-            assert set(defaults.default_bookmakers(sport)) <= region
+            assert set(defaults.default_bookmakers(sport)) <= set(defaults.all_bookmakers())
 
     def test_with_sharp_adds_it_once(self):
         assert defaults.SHARP_BOOKMAKER in defaults.with_sharp(["Sportsbet"])
@@ -268,6 +284,26 @@ class TestGetOdds:
         assert "Cost: 0 credits." in text
         assert "Nothing was charged" in text
 
+    def test_empty_on_a_wrong_market_blames_the_market(self, fake):
+        """Soccer has no head_to_head because of the draw. Left unexplained,
+        the empty result reads as the season being over, which is a wrong
+        conclusion a user would act on."""
+        text = server.get_odds("EPL", market_types=["head_to_head"])
+
+        assert "does not have 'head_to_head'" in text
+        assert "do not read it as the season being over" in text
+
+    def test_empty_on_a_valid_market_blames_the_fixtures(self, fake):
+        text = server.get_odds("EPL", market_types=["draw_no_bet"])
+
+        assert "market types are valid" in text
+        assert "no fixtures priced right now" in text
+
+    def test_unsupported_markets_only_flags_the_bad_ones(self, fake):
+        wrong = server.unsupported_markets("EPL", ["draw_no_bet", "head_to_head"])
+
+        assert wrong == ["head_to_head"]
+
     def test_explicit_bookmakers_are_respected(self, fake):
         server.get_odds("AFL", bookmakers=["Pinnacle"])
 
@@ -283,20 +319,59 @@ class TestGetOdds:
 
 
 class TestValueBets:
-    def test_sharp_book_is_always_requested(self, fake):
-        server.find_value_bets("AFL", bookmakers=["Sportsbet", "TAB"])
+    def test_a_named_book_is_always_requested(self, fake):
+        """Without it there is nothing to de-vig, so the request would be paid
+        for and return nothing."""
+        server.find_value_bets("AFL", bookmakers=["Sportsbet", "TAB"], devig="Pinnacle")
 
-        assert defaults.SHARP_BOOKMAKER in fake.calls[0][2]
+        assert "Pinnacle" in fake.calls[0][2]
 
-    def test_sharp_does_not_push_the_default_over_a_credit_group(self, fake):
-        """Appending the sharp book to ten would make eleven, and
-        ceil(11 / 5) is 3 credits where the description promises 2."""
-        server.find_value_bets("AFL")
+    def test_a_named_book_does_not_push_the_default_over_a_credit_group(self, fake):
+        """Appending it to ten would make eleven, and ceil(11 / 5) is 3 credits
+        where the description promises 2."""
+        server.find_value_bets("AFL", devig="Pinnacle")
 
         books = fake.calls[0][2]
-        assert defaults.SHARP_BOOKMAKER in books
+        assert "Pinnacle" in books
         assert len(books) == defaults.ARBITRAGE_DEFAULT_COUNT
         assert -(-len(books) // 5) == 2
+
+    def test_a_consensus_forces_no_particular_book(self, fake):
+        """The default needs enough books, not any one of them, so nothing is
+        seeded and the caller's list is requested as given."""
+        server.find_value_bets("AFL", bookmakers=["Sportsbet", "TAB"])
+
+        assert list(fake.calls[0][2]) == ["Sportsbet", "TAB"]
+
+    def test_the_sdk_is_actually_called(self, fake):
+        """Every tool turns an exception into text, so calling the SDK wrongly
+        reads exactly like a failed request. This asserts the call went
+        through, which is what an argument renamed in the SDK would break."""
+        for devig in ("all", "Pinnacle"):
+            assert not server.find_value_bets("AFL", devig=devig).startswith("Request failed")
+
+    def test_an_empty_consensus_blames_the_book_count(self, fake):
+        """Two books priced the game, and a consensus needs four. Left
+        unexplained, a thin market reads as no value, which is a different
+        conclusion."""
+        fake._odds = ONE_GAME
+
+        text = server.find_value_bets("AFL", market="head_to_head")
+
+        assert "four bookmakers" in text
+        assert "devig='Pinnacle'" in text
+
+    def test_no_games_is_not_no_value(self, fake):
+        """Nothing came back at all, so nothing was tested."""
+        text = server.find_value_bets("AFL", market="draw_no_bet")
+
+        assert "nothing to look at" in text
+        assert "not the same as finding no opportunities" in text
+
+    def test_no_games_on_a_wrong_market_blames_the_market(self, fake):
+        text = server.find_arbitrage("AFL", market="head_to_head")
+
+        assert "does not have 'head_to_head'" in text
 
 
 class TestProtocol:

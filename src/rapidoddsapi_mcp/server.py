@@ -27,9 +27,8 @@ from rapidoddsapi.types import OddsResponse, Usage
 
 from . import __version__
 from .defaults import (
-    SHARP_BOOKMAKER,
+    all_bookmakers,
     default_bookmakers,
-    region_bookmakers,
     wide_bookmakers,
     with_sharp,
 )
@@ -132,6 +131,46 @@ def _explain(exc: Exception) -> str:
     return f"Request failed: {exc}"
 
 
+def unsupported_markets(sport: str, requested: Sequence[str]) -> list[str]:
+    """Which of these market types the sport does not carry.
+
+    Only worth asking once a response comes back empty. The API accepts any
+    market string and returns nothing for one it does not recognise, so a
+    misspelled or wrong-sport key is indistinguishable from a sport simply
+    having no fixtures. Checking costs nothing.
+    """
+    try:
+        markets = get_client().get_sport(sport).get("markets")
+    except RapidOddsAPIError:
+        return []
+    if markets is None:
+        return []
+
+    valid = {*markets["game"], *markets["team"], *markets["player_props"]}
+    return [key for key in requested if key not in valid]
+
+
+def _no_games(sport: str, market: str) -> str:
+    """Nothing came back at all, which is not the same as nothing being found.
+
+    "No arbitrage" reads as having looked and found none, so a sport out of
+    season or a market type this sport does not carry has to say so, or the
+    model reports a conclusion it never tested.
+    """
+    wrong = unsupported_markets(sport, [market])
+    if wrong:
+        return (
+            f"{sport} does not have '{market}', so there was nothing to look "
+            f"at. Call list_sports({sport!r}) for the market types it carries "
+            f"and retry with one of those."
+        )
+    return (
+        f"No games priced for {sport} on {market}, so there was nothing to "
+        f"look at. The season may be over or the fixtures not yet posted. "
+        f"This is not the same as finding no opportunities."
+    )
+
+
 def _fetch_odds(
     sport: str, market_types: Sequence[str], bookmakers: Sequence[str]
 ) -> tuple[OddsResponse, int]:
@@ -190,14 +229,15 @@ def list_sports(sport: str | None = None) -> str:
                         lines.append(f"{group} ({len(keys)}):")
                         lines.extend(f"  {key}" for key in keys)
                         lines.append("")
-            feeds = region_bookmakers(sport)
-            lines.append(f"bookmakers you can request for {info['id']} ({len(feeds)}):")
+            feeds = all_bookmakers()
+            lines.append(f"bookmakers you can request ({len(feeds)}):")
             lines.extend(f"  {feed}" for feed in feeds)
             lines += [
                 "",
-                "That is the complete list of feeds for this region. A name "
-                "not on it returns no prices, so do not try other bookmaker "
-                "names to see what happens, each attempt can cost credits.",
+                "That is every feed, and they are not split by region: an "
+                "American book pricing the AFL is normal. A name not on the "
+                "list returns no prices, so do not try other bookmaker names "
+                "to see what happens, each attempt can cost credits.",
                 "These are feeds, not brands. One feed often carries several "
                 "brands at identical prices, so the number of betting sites "
                 "behind them is larger than the number of names here.",
@@ -267,14 +307,30 @@ def get_odds(
 
     body = format_odds(response, books)
     if not body:
-        return (
-            f"No games for {sport} from {', '.join(books)} "
-            f"on {', '.join(markets)}.\n"
-            f"Nothing was charged, since empty responses are free. The season "
-            f"may be over, or these bookmakers may not price this market. "
-            f"Check list_sports({sport!r}) for valid market types before "
-            f"retrying.\n" + credit_line(cost, _usage())
-        )
+        lines = [
+            f"No games for {sport} from {', '.join(books)} on "
+            f"{', '.join(markets)}. Nothing was charged, since empty responses "
+            f"are free."
+        ]
+
+        wrong = unsupported_markets(sport, markets)
+        if wrong:
+            lines.append(
+                f"{sport} does not have {', '.join(repr(k) for k in wrong)}. "
+                f"That is why the result is empty, and it would be empty "
+                f"whatever the fixtures are, so do not read it as the season "
+                f"being over. Call list_sports({sport!r}) for the market types "
+                f"this sport actually carries and retry with one of those."
+            )
+        else:
+            lines.append(
+                f"The market types are valid for {sport}, so there are simply "
+                f"no fixtures priced right now, whether out of season or not "
+                f"yet posted. Retrying the same request will not change that."
+            )
+
+        lines.append(credit_line(cost, _usage()))
+        return "\n".join(lines)
 
     return f"{body}\n\n{credit_line(cost, _usage())}"
 
@@ -338,13 +394,18 @@ def find_arbitrage(
     to ten bookmakers, 2 credits, because an arbitrage only exists when books
     disagree and five rarely spread far enough.
 
-    Only two-way markets with no line work: head_to_head, its period variants
-    such as head_to_head_1st_half, and soccer's draw_no_bet. Totals, spreads,
-    player props and three-way markets are rejected with an explanation rather
-    than silently returning nothing.
+    Works on any market whose bets have two sides: head_to_head and its period
+    variants, soccer's draw_no_bet, totals, handicaps, team totals and player
+    props. Only three-way markets are rejected, with an explanation rather than
+    silently returning nothing.
+
+    On a market with a line each line is a separate bet, so a totals market can
+    return several results for one game. Over 8.5 is never paired with Under
+    9.5, and a handicap of -1.5 only ever with +1.5.
 
     min_profit is a percentage, default 1.0. Below roughly 1 percent an edge
-    usually disappears while the second leg is being placed.
+    usually disappears while the second leg is being placed. Set it negative to
+    see near misses.
     """
     books = bookmakers or wide_bookmakers(sport)
 
@@ -356,6 +417,8 @@ def find_arbitrage(
 
     body = format_arbitrage(found, stake)
     if not body:
+        if not response.get("games"):
+            return _no_games(sport, market) + "\n" + credit_line(cost, _usage())
         return (
             f"No arbitrage on {market} for {sport} above {min_profit}% "
             f"across {len(books)} bookmakers.\n"
@@ -372,49 +435,77 @@ def find_value_bets(
     market: str = "head_to_head",
     bookmakers: list[str] | None = None,
     min_edge: float = 2.0,
-    sharp: str = SHARP_BOOKMAKER,
+    devig: str = "all",
 ) -> str:
-    """Find prices that beat a sharp bookmaker's fair value.
+    """Find prices that beat fair value.
 
-    A sharp book runs thin margins and moves fast, so its prices track true
-    probability. Stripping its margin gives a fair price, and any book paying
-    more than that is positive expected value.
+    Bookmakers price in a margin, so their odds sum to more than certainty.
+    Removing it leaves a fair price, and any book paying more than that is
+    positive expected value.
+
+    devig says where the fair price comes from, and is worth explaining to the
+    user rather than just picking:
+
+      "all"        the default. Every bookmaker fetched is de-vigged on its
+                   own and the results averaged. Needs no view on which book
+                   is sharp, works on markets Pinnacle does not price, and is
+                   the one to use unless there is a reason not to.
+      a book name  "Pinnacle" measures every other book against that one. A
+                   sharp book runs thin margins and moves fast, so its prices
+                   track true probability more closely than an average does.
+                   Tighter, but only where that book prices the market, and it
+                   cannot itself appear in the results.
 
     Fetches odds first, so it costs the same as get_odds:
     ceil(number of bookmakers / 5) credits for the single market. Defaults to
-    ten bookmakers, 2 credits. The sharp book is added automatically if it is
-    not in the list, since the calculation is impossible without it.
+    ten bookmakers, 2 credits. Naming a book puts it in the request
+    automatically, since the calculation is impossible without it.
 
-    Same market limits as find_arbitrage: two-way, no line. head_to_head, its
-    period variants, and soccer's draw_no_bet.
+    Same markets as find_arbitrage: head_to_head and its period variants,
+    draw_no_bet, totals, handicaps, team totals and player props.
 
     min_edge is a percentage, default 2.0. Smaller edges are usually inside the
     error of the fair price rather than real value.
     """
-    # Seeded into the default spread so it stays at ten books and two credits.
-    # An explicit list is respected as given, with the sharp book appended only
-    # because the edge cannot be worked out without it.
-    books = (
-        list(with_sharp(bookmakers))
-        if bookmakers
-        else list(wide_bookmakers(sport, must_include=(sharp,)))
-    )
+    consensus = devig == "all"
+
+    # The named book is seeded into the default spread rather than appended, so
+    # it stays at ten books and two credits. A consensus needs no particular
+    # book, only enough of them.
+    if bookmakers:
+        books = list(bookmakers) if consensus else list(with_sharp(bookmakers, devig))
+    else:
+        books = list(wide_bookmakers(sport, must_include=() if consensus else (devig,)))
 
     try:
         response, cost = _fetch_odds(sport, [market], books)
-        found = value(response, sharp=sharp, market=market, min_edge=min_edge)
+        found = value(response, devig=devig, market=market, min_edge=min_edge)
     except Exception as exc:
         return _explain(exc)
 
-    body = format_value_bets(found, sharp)
+    body = format_value_bets(found, devig)
     if not body:
-        return (
-            f"No value on {market} for {sport} above {min_edge}% against "
-            f"{sharp}.\n"
-            f"If {sharp} does not price this sport there is nothing to compare "
-            f"against, which looks the same as finding nothing.\n"
-            + credit_line(cost, _usage())
-        )
+        if not response.get("games"):
+            return _no_games(sport, market) + "\n" + credit_line(cost, _usage())
+
+        lines = [f"No value on {market} for {sport} above {min_edge}%."]
+        if consensus:
+            lines.append(
+                "A consensus needs four bookmakers pricing the same bet, and on "
+                "markets with a line that means the same line. Fewer books "
+                "quote each line of a totals, handicap or player prop market "
+                "than quote the game itself, so this can mean too few prices "
+                "rather than no value. Naming one book, devig='Pinnacle', "
+                "needs only that book and is worth trying here."
+            )
+        else:
+            lines.append(
+                f"If {devig} does not price this market there is nothing to "
+                f"compare against, which looks the same as finding nothing. "
+                f"devig='all' prices against the other books instead."
+            )
+        lines.append(credit_line(cost, _usage()))
+        return "\n".join(lines)
 
     return f"{body}\n{credit_line(cost, _usage())}"
 

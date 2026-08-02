@@ -42,25 +42,21 @@ def default_bookmakers(sport: str) -> tuple[str, ...]:
     return _REGIONS.get(sport.upper(), _FALLBACK)
 
 
-def region_bookmakers(sport: str) -> Sequence[str]:
-    """Every feed in this sport's region.
+def all_bookmakers() -> Sequence[str]:
+    """Every feed, for every sport.
+
+    Not filtered by region. Feeds price across regions, so an American book
+    quoting the AFL is normal, and hiding it would remove a real option for
+    line shopping.
 
     The API has no bookmaker endpoint and does not validate the names, so a
     name that is not a feed returns an empty result rather than an error.
     Without this list the only way to discover a feed is to guess and pay for
     the attempt, so it has to be handed over up front.
     """
-    from rapidoddsapi import AU_BOOKMAKERS, BOOKMAKERS, US_BOOKMAKERS
+    from rapidoddsapi import BOOKMAKERS
 
-    # Soccer and tennis are priced everywhere, by Australian and American books
-    # as much as European ones, so the honest answer for them is every feed.
-    # Only the domestic codes are genuinely regional.
-    pools: dict[tuple[str, ...], Sequence[str]] = {
-        AU_DEFAULT: AU_BOOKMAKERS,
-        US_DEFAULT: US_BOOKMAKERS,
-        EU_DEFAULT: BOOKMAKERS,
-    }
-    return pools[default_bookmakers(sport)]
+    return BOOKMAKERS
 
 
 def wide_bookmakers(
@@ -99,8 +95,12 @@ def wide_bookmakers(
     return picked
 
 
-def with_sharp(bookmakers: Sequence[str]) -> Sequence[str]:
-    """Guarantee the sharp book is in the list, since value is measured off it."""
-    if SHARP_BOOKMAKER in bookmakers:
+def with_sharp(bookmakers: Sequence[str], book: str = SHARP_BOOKMAKER) -> Sequence[str]:
+    """Guarantee the book value is measured against is in the list.
+
+    Without it there is nothing to de-vig, so the request would be paid for and
+    return nothing.
+    """
+    if book in bookmakers:
         return bookmakers
-    return [SHARP_BOOKMAKER, *bookmakers]
+    return [book, *bookmakers]

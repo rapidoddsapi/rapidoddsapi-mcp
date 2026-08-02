@@ -2,6 +2,40 @@
 
 Notable changes to this package. Versions follow [semantic versioning](https://semver.org).
 
+## 0.3.0
+
+Needs the SDK at 0.3.0 or later.
+
+- `find_arbitrage` and `find_value_bets` work on totals, handicaps, team totals
+  and player props, not only two-way markets with no line. Their descriptions
+  said otherwise, so the model was turning down markets that now work. Only
+  three-way markets are still refused
+- `find_value_bets` takes `devig` in place of `sharp`. The default, `"all"`,
+  de-vigs every bookmaker fetched and averages the result, which needs no view
+  on which book is sharp and works on markets Pinnacle does not price. Naming
+  a book measures the others against it, as before. The description explains
+  the trade-off so the model can put it to the user rather than pick silently
+- Nothing is seeded into the bookmaker list under `"all"`, since a consensus
+  needs enough books rather than any particular one. Naming a book still seeds
+  it, or the request is paid for and cannot be de-vigged
+- An empty consensus says four bookmakers have to price the same line, and
+  suggests naming a book. Fewer books quote each line of a totals or player
+  prop market than quote the game, so a thin market otherwise reads as no value
+- Arbitrage legs and value bets show the line and the player or team, so two
+  sides of a totals bet no longer both read "Over". Handicaps are signed,
+  totals are not, since "Over +8.5" implies the line itself is positive
+- An empty result from `find_arbitrage` or `find_value_bets` says when no games
+  came back at all, rather than reporting that it looked and found nothing. A
+  sport out of season read as "no arbitrage", which is a conclusion that was
+  never tested
+- A near miss prints as `-0.90%` rather than `+-0.90%`
+- `list_sports(sport)` returns every bookmaker rather than only the sport's
+  region. Feeds price across regions, so an American book quoting the AFL is
+  normal and hiding it removed a real option for line shopping
+- An empty `get_odds` now says whether the market types are wrong for the
+  sport. The API returns nothing for a market it does not recognise, which was
+  indistinguishable from the season being over
+
 ## 0.2.0
 
 - `list_sports(sport)` now returns every bookmaker that can be requested for

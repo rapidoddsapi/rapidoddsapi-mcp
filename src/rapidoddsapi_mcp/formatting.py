@@ -71,6 +71,25 @@ def format_odds(response: OddsResponse, bookmakers: Sequence[str]) -> str:
     return "\n".join(lines).rstrip()
 
 
+def selection_label(bet: Mapping[str, Any]) -> str:
+    """Name a bet in full, so two sides of one line cannot be confused.
+
+    On a market with a line both sides are called "Over" and "Under", and on
+    props and team totals several bets share those names, so the subject and
+    the line have to be shown or the legs read as duplicates. Only a handicap
+    is signed: "Over +8.5" implies the line itself is positive, where on a
+    handicap the sign is the whole meaning.
+    """
+    name = str(bet.get("team") or bet.get("selection", ""))
+    parts = [bet.get("player_name"), bet.get("team_name"), name]
+
+    point = bet.get("point")
+    if point is not None:
+        parts.append(f"{point:g}" if name in ("Over", "Under") else f"{point:+g}")
+
+    return " ".join(str(part) for part in parts if part)
+
+
 def format_arbitrage(found: list[Arbitrage], stake: float) -> str:
     if not found:
         return ""
@@ -78,12 +97,12 @@ def format_arbitrage(found: list[Arbitrage], stake: float) -> str:
     lines = [f"{len(found)} arbitrage opportunit{'y' if len(found) == 1 else 'ies'}:", ""]
     for arb in found:
         lines.append(
-            f"{arb['away_team']} at {arb['home_team']}  +{arb['profit_percent']:.2f}% "
+            f"{arb['away_team']} at {arb['home_team']}  {arb['profit_percent']:+.2f}% "
             f"on a {stake:g} stake"
         )
         for leg in arb["legs"]:
             lines.append(
-                f"    {leg['team']:<28} {leg['price']} @ {leg['bookmaker']}  "
+                f"    {selection_label(leg):<34} {leg['price']} @ {leg['bookmaker']}  "
                 f"stake {leg['stake']:g}"
             )
         lines.append("")
@@ -95,14 +114,16 @@ def format_arbitrage(found: list[Arbitrage], stake: float) -> str:
     return "\n".join(lines)
 
 
-def format_value_bets(found: list[ValueBet], sharp: str) -> str:
+def format_value_bets(found: list[ValueBet], devig: str) -> str:
     if not found:
         return ""
 
-    lines = [f"{len(found)} value bet(s), priced against {sharp}:", ""]
+    against = "every bookmaker" if devig == "all" else devig
+    lines = [f"{len(found)} value bet(s), priced against {against}:", ""]
     for bet in found:
         lines.append(
-            f"+{bet['edge_percent']:.2f}%  {bet['selection']} {bet['price']} @ {bet['bookmaker']}"
+            f"+{bet['edge_percent']:.2f}%  {selection_label(bet)} "
+            f"{bet['price']} @ {bet['bookmaker']}"
         )
         lines.append(
             f"    {bet['away_team']} at {bet['home_team']}  "
@@ -111,7 +132,7 @@ def format_value_bets(found: list[ValueBet], sharp: str) -> str:
         )
     lines.append("")
     lines.append(
-        f"Edge is measured off {sharp} with its margin removed. It is an estimate of "
+        f"Edge is measured off {against} with the margin removed. It is an estimate of "
         "value, not a guaranteed win."
     )
     return "\n".join(lines)
