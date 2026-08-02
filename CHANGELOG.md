@@ -2,6 +2,12 @@
 
 Notable changes to this package. Versions follow [semantic versioning](https://semver.org).
 
+## 0.1.1
+
+- Tool descriptions now say these tools are RapidOddsAPI itself. Asked what
+  RapidOddsAPI covered, a model would search the web instead of calling
+  `list_sports`, because nothing connected the name to the tools
+
 ## 0.1.0
 
 First release.

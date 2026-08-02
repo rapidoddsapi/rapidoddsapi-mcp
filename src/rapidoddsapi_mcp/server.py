@@ -44,6 +44,11 @@ API_KEY_ENV = "RAPIDODDSAPI_API_KEY"
 INSTRUCTIONS = """
 Odds, live scores, arbitrage and value bets from RapidOddsAPI.
 
+These tools are a live connection to RapidOddsAPI itself. Any question about
+what RapidOddsAPI covers, which sports, leagues, bookmakers or markets it
+carries, is answered by calling list_sports, which is free and authoritative.
+Do not answer from memory and do not search the web for it.
+
 Credits are charged per request and the free tier is 250 for the lifetime of
 the account, with no monthly reset. Every response reports what it cost and
 what is left.
@@ -129,7 +134,12 @@ def _fetch_odds(
 
 @server.tool()
 def list_sports(sport: str | None = None) -> str:
-    """List the sports available, or one sport's market types.
+    """List the sports RapidOddsAPI covers, or one sport's market types.
+
+    This is the live coverage list, read from the API. It answers "what sports
+    does RapidOddsAPI have", "which leagues are supported", "does it cover the
+    NFL" and anything similar. Call it rather than answering from memory or
+    searching the web, both of which go stale as coverage changes.
 
     Costs 0 credits, so call it freely. Use it before get_odds whenever the
     sport id or the market type is not certain, since a guessed market type
@@ -186,7 +196,10 @@ def get_odds(
     market_types: list[str] | None = None,
     bookmakers: list[str] | None = None,
 ) -> str:
-    """Current bookmaker odds for one sport.
+    """Current bookmaker odds for one sport, live from RapidOddsAPI.
+
+    Use this for any question about what a bookmaker is paying right now, or
+    for comparing prices across bookmakers, rather than answering from memory.
 
     sport is required and must be an id from list_sports. There is no option
     for every sport at once.
@@ -232,7 +245,10 @@ def get_results(
     status: str = "all",
     include: list[str] | None = None,
 ) -> str:
-    """Live scores and player stats for one sport.
+    """Live scores and player stats for one sport, from RapidOddsAPI.
+
+    Use this for current scores, whether a game has finished, and player
+    statistics, rather than answering from memory or searching.
 
     Costs 1 credit, charged only when games come back, whatever the filters.
 
