@@ -10,11 +10,24 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from rapidoddsapi import group_games
-from rapidoddsapi.types import Arbitrage, OddsResponse, ResultsResponse, Usage, ValueBet
+from rapidoddsapi.types import (
+    Arbitrage,
+    FuturesResponse,
+    OddsResponse,
+    Outcome,
+    ResultsResponse,
+    Usage,
+    ValueBet,
+)
 
-# A selection is its name plus, on markets with a line, the line itself. Totals
-# quote "Over" at several points and they are different bets.
+# A selection is everything that names the bet plus, on markets with a line,
+# the line itself. Totals quote "Over" at several points and they are
+# different bets, and so are one player's Over and Under.
 Selection = tuple[str, float | None]
+
+# Futures fields can run to 75 runners per book. The favourites are what gets
+# asked about, and the rest would bury them.
+FUTURES_SHOWN = 25
 
 
 def credit_line(cost: int, usage: Usage | None) -> str:
@@ -59,16 +72,55 @@ def format_odds(response: OddsResponse, bookmakers: Sequence[str]) -> str:
 
         for market, prices in _by_market(entry).items():
             lines.append(f"  {market}")
-            for (name, point), quotes in prices.items():
-                quotes.sort(key=lambda q: q[0], reverse=True)
-                label = name if point is None else f"{name} {point:+g}"
-                best_price, best_book = quotes[0]
-                rest = ", ".join(f"{book} {price}" for price, book in quotes[1:])
-                line = f"    {label:<28} {best_price} ({best_book})"
-                lines.append(f"{line}   {rest}" if rest else line)
+            for selection, quotes in prices.items():
+                lines.append(_price_line(selection, quotes))
         lines.append("")
 
     return "\n".join(lines).rstrip()
+
+
+def format_futures(response: FuturesResponse, bookmakers: Sequence[str]) -> str:
+    """Futures grouped by market, favourites first.
+
+    A futures response is one game's bookmakers list with no game around it,
+    so the same inversion as match odds applies, without the merging.
+    """
+    if not response.get("bookmakers"):
+        return ""
+
+    books = ", ".join(bookmakers)
+    lines = [
+        f"{response.get('sport', 'Unknown')} futures, season {response.get('season')}, "
+        f"from {books}",
+        "",
+    ]
+
+    for market, prices in _by_market(response).items():
+        lines.append(f"  {market}")
+        for quotes in prices.values():
+            quotes.sort(key=lambda q: q[0], reverse=True)
+        ranked = sorted(prices.items(), key=lambda item: item[1][0][0])
+        for selection, quotes in ranked[:FUTURES_SHOWN]:
+            lines.append(_price_line(selection, quotes))
+        if len(ranked) > FUTURES_SHOWN:
+            lines.append(
+                f"    ... {len(ranked) - FUTURES_SHOWN} longer priced selections not shown"
+            )
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
+def _price_line(selection: Selection, quotes: list[tuple[float, str]]) -> str:
+    """One selection across books, best price first."""
+    label, point = selection
+    if point is not None:
+        label = f"{label} {point:g}" if label.endswith(("Over", "Under")) else f"{label} {point:+g}"
+    quotes.sort(key=lambda q: q[0], reverse=True)
+    best_price, best_book = quotes[0]
+    rest = ", ".join(f"{book} {price}" for price, book in quotes[1:])
+    line = f"    {label:<34} {best_price} ({best_book})"
+    return f"{line}   {rest}" if rest else line
 
 
 def selection_label(bet: Mapping[str, Any]) -> str:
@@ -213,13 +265,30 @@ def _by_market(entry: Mapping[str, Any]) -> dict[str, dict[Selection, list[tuple
                 price = outcome.get("price")
                 if price is None:
                     continue
-                name = outcome.get("player_name") or outcome.get("name", "")
-                selection: Selection = (name, outcome.get("point"))
+                selection: Selection = (_outcome_label(outcome), outcome.get("point"))
                 markets.setdefault(key, {}).setdefault(selection, []).append(
                     (price, book.get("name", "?"))
                 )
 
     return markets
+
+
+def _outcome_label(outcome: Outcome) -> str:
+    """Everything that tells this outcome apart from its neighbours.
+
+    The name alone is not enough: every player prop is "Over" or "Under", both
+    teams' totals share those names, and winning margin prices two bands per
+    team under the team's name. Leaving any of these out merges different bets
+    into one row, and its "best price" can then belong to the other side.
+    """
+    parts: list[str] = []
+    if outcome.get("round") is not None:
+        parts.append(f"Round {outcome['round']}")
+    for field in ("game", "player_name", "team_name", "name", "description"):
+        value = outcome.get(field)
+        if value and value not in parts:
+            parts.append(str(value))
+    return " ".join(parts)
 
 
 def _when(game: Mapping[str, Any]) -> str:

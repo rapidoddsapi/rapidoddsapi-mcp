@@ -2,6 +2,28 @@
 
 Notable changes to this package. Versions follow [semantic versioning](https://semver.org).
 
+## 0.4.0
+
+Needs the SDK at 0.4.0 or later.
+
+- `get_futures` for season-long outrights such as the Brownlow Medal and AFL
+  Premiership. `list_sports(sport)` lists the futures keys separately from the
+  match ones, and `list_sports()` marks which sports have futures
+- NCAAF, NBL, AFLW, NRLW and the per-tournament ATP ids come through from the
+  SDK
+- Bookmakers default to every feed rather than five picked by region. Feeds
+  price across regions, an Australian book carries the NFL and Bet365 is the
+  only NCAAF feed, so a regional default left out books pricing the game. A
+  default request now costs about 6 credits per market type instead of 1
+- `bookmakers` accepts `"AU"`, `"US"`, `"EU"` and `"EXCHANGES"` as groups,
+  mixable with names
+- `get_odds` keeps player props, team totals and winning margin bands apart.
+  Grouped on the player and line alone, a player's Over and Under merged into
+  one row, both teams' totals did the same, and the best price shown could
+  belong to the other side
+- `find_arbitrage` and `find_value_bets` explain that a banded market such as
+  winning margin cannot be paired, rather than reporting no opportunities
+
 ## 0.3.0
 
 Needs the SDK at 0.3.0 or later.

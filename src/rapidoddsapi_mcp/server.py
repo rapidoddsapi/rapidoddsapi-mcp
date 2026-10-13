@@ -1,7 +1,7 @@
 """The MCP server and its tools.
 
-Five tools rather than one per endpoint. Every extra tool is another thing to
-pick wrongly, and a wrong pick here costs credits.
+Six tools, kept few on purpose. Every extra tool is another thing to pick
+wrongly, and a wrong pick here costs credits.
 
 Each tool ends with what it spent and what is left. Credits are the scarce
 resource, the free tier is 250 for the life of the account, and a model that
@@ -27,14 +27,15 @@ from rapidoddsapi.types import OddsResponse, Usage
 
 from . import __version__
 from .defaults import (
+    FUTURES_MARKETS,
     all_bookmakers,
-    default_bookmakers,
-    wide_bookmakers,
-    with_sharp,
+    resolve_bookmakers,
+    with_devig_book,
 )
 from .formatting import (
     credit_line,
     format_arbitrage,
+    format_futures,
     format_odds,
     format_results,
     format_value_bets,
@@ -61,16 +62,23 @@ Credits are charged per request and the free tier is 250 for the lifetime of
 the account, with no monthly reset. Every response reports what it cost and
 what is left.
 
-Two rules that keep the cost down:
+Cost multiplies with both the number of market types and the number of
+bookmakers, at one credit per market per five bookmakers.
   - A sport is always required. There is no way to ask for every sport at once.
-  - Leave bookmakers unset unless you need specific ones. The default is five,
-    which is the cheapest useful request. Cost multiplies with both the number
-    of market types and the number of bookmakers.
+  - With no bookmakers named, every feed is requested, about 6 credits per
+    market type. When the user names a region or books, pass those instead:
+    "AU", "US", "EU" and "EXCHANGES" are accepted as groups alongside plain
+    names, so ["AU"] or ["US", "Pinnacle"] works. On the free tier, say what
+    a request will cost before making an expensive one.
 
 Never guess a bookmaker or market name. An unknown one is not rejected, it
 comes back with no prices, so trying names to see which work is both slow and
 billable. list_sports(sport) returns every valid name for that sport and costs
 nothing.
+
+Season-long outrights such as the Brownlow Medal or the AFL Premiership are
+futures. They come from get_futures, not get_odds, and use their own market
+keys, which list_sports(sport) shows for sports that have them.
 
 list_sports is free. Call it first when unsure of a sport id or a market type.
 """.strip()
@@ -171,6 +179,28 @@ def _no_games(sport: str, market: str) -> str:
     )
 
 
+def _banded(response: OddsResponse, market: str) -> str | None:
+    """Explain a market priced in bands, which no pair of bets can cover.
+
+    Winning margin prices several bands per team, told apart only by their
+    description. The finders skip those outcomes, so without this the result
+    reads as having looked and found nothing.
+    """
+    for game in response.get("games", []):
+        for book in game.get("bookmakers", []):
+            for entry in book.get("markets", []):
+                if entry.get("key") == market and any(
+                    outcome.get("description") for outcome in entry.get("outcomes", [])
+                ):
+                    return (
+                        f"'{market}' is priced in bands, such as a small and a big "
+                        f"win for each team, so no two bets cover every result and "
+                        f"it cannot be checked this way. Use get_odds to compare "
+                        f"its prices across books instead."
+                    )
+    return None
+
+
 def _fetch_odds(
     sport: str, market_types: Sequence[str], bookmakers: Sequence[str]
 ) -> tuple[OddsResponse, int]:
@@ -198,11 +228,13 @@ def list_sports(sport: str | None = None) -> str:
     sport id or the market type is not certain, since a guessed market type
     returns nothing and a guessed sport id is an error.
 
-    With no argument: every sport id, plus which of them have live scores.
+    With no argument: every sport id, plus which of them have live scores and
+    which have futures.
     With a sport: that sport's market types, grouped into game, team and
     player_props, and every bookmaker you can request for it. Any of those
     market keys is valid as a get_odds market_type, and any of those bookmaker
-    names is valid as a get_odds bookmaker.
+    names is valid as a get_odds bookmaker. Sports with futures also list
+    their futures keys, which go to get_futures instead.
 
     Call this before naming bookmakers. Unrecognised names are not an error,
     they return no prices, so probing to find out which exist looks like a
@@ -229,15 +261,22 @@ def list_sports(sport: str | None = None) -> str:
                         lines.append(f"{group} ({len(keys)}):")
                         lines.extend(f"  {key}" for key in keys)
                         lines.append("")
+            futures = FUTURES_MARKETS.get(info["id"], ())
+            if futures:
+                lines.append(f"futures, for get_futures not get_odds ({len(futures)}):")
+                lines.extend(f"  {key}" for key in futures)
+                lines.append("")
             feeds = all_bookmakers()
             lines.append(f"bookmakers you can request ({len(feeds)}):")
             lines.extend(f"  {feed}" for feed in feeds)
             lines += [
                 "",
-                "That is every feed, and they are not split by region: an "
-                "American book pricing the AFL is normal. A name not on the "
-                "list returns no prices, so do not try other bookmaker names "
-                "to see what happens, each attempt can cost credits.",
+                "That is every feed, and the default when none are named. "
+                "AU, US, EU and EXCHANGES are accepted as groups, but feeds "
+                "price across regions: an Australian book pricing the NFL is "
+                "normal. A name not on the list returns no prices, so do not "
+                "try other bookmaker names to see what happens, each attempt "
+                "can cost credits.",
                 "These are feeds, not brands. One feed often carries several "
                 "brands at identical prices, so the number of betting sites "
                 "behind them is larger than the number of names here.",
@@ -252,8 +291,13 @@ def list_sports(sport: str | None = None) -> str:
 
         lines = [f"{len(sports)} sports:", ""]
         for entry in sports:
-            mark = "  (live scores available)" if entry["id"] in with_results else ""
-            lines.append(f"  {entry['id']:<16} {entry['name']}{mark}")
+            marks = []
+            if entry["id"] in with_results:
+                marks.append("live scores available")
+            if entry["id"] in FUTURES_MARKETS:
+                marks.append("futures available")
+            mark = f"  ({', '.join(marks)})" if marks else ""
+            lines.append(f"  {entry['id']:<20} {entry['name']}{mark}")
         lines += [
             "",
             "Pass a sport to this tool to see its market types.",
@@ -279,26 +323,27 @@ def get_odds(
     for every sport at once.
 
     Cost: number of market types x ceil(number of bookmakers / 5) credits,
-    charged only when games come back. The defaults, one market across five
-    bookmakers, cost 1 credit. Both arguments multiply, so nine market types
-    across eighteen bookmakers is 36 credits. Widen only when asked to.
+    charged only when games come back. The default, one market across every
+    feed, is about 6 credits. Both arguments multiply, so nine market types
+    across every feed is about 54.
 
     market_types defaults to head_to_head, the plain winner market. Soccer has
     no head_to_head because of the draw, so use head_to_head_3_way or
     draw_no_bet there. Get exact keys from list_sports(sport).
 
-    bookmakers defaults to five that cover the sport's region. To use others,
-    take the names from list_sports(sport), which lists every feed available.
-    Never guess a name: an unknown one returns no prices rather than an error,
-    so guessing is indistinguishable from the sport having no odds, and each
-    guess can cost credits.
+    bookmakers defaults to every feed. To narrow it, and the cost with it, pass
+    a group, "AU", "US", "EU" or "EXCHANGES", or names from list_sports(sport),
+    or a mix: ["AU", "Pinnacle"]. Feeds price across regions, so a group is a
+    way to choose books, not a guarantee they carry the sport. Never guess a
+    name: an unknown one returns no prices rather than an error, so guessing
+    is indistinguishable from the sport having no odds.
 
     Names are odds feeds, not brands. "Ladbrokes" is the feed that also carries
     Neds, "Betmakers" carries the 26 brands running on it, so a brand name that
     is not itself a feed returns nothing.
     """
     markets = market_types or ["head_to_head"]
-    books = bookmakers or default_bookmakers(sport)
+    books = resolve_bookmakers(bookmakers)
 
     try:
         response, cost = _fetch_odds(sport, markets, books)
@@ -333,6 +378,65 @@ def get_odds(
         return "\n".join(lines)
 
     return f"{body}\n\n{credit_line(cost, _usage())}"
+
+
+@server.tool()
+def get_futures(
+    sport: str,
+    market_types: list[str],
+    bookmakers: list[str] | None = None,
+    season: int | None = None,
+) -> str:
+    """Season-long outright odds for one sport, such as the Brownlow Medal or
+    the AFL Premiership, live from RapidOddsAPI.
+
+    Use this, not get_odds, for anything decided over a season rather than in
+    one game. Only AFL has futures today; list_sports marks which sports do.
+
+    market_types is required. Take the keys from list_sports(sport), which
+    lists the futures keys separately from the match ones. A match key such as
+    head_to_head returns nothing here.
+
+    Cost: number of market types x ceil(number of bookmakers / 5) credits,
+    charged only when prices come back. bookmakers works as on get_odds: every
+    feed by default, about 6 credits per market, or a group or names.
+
+    season defaults to the latest one stored. Long fields are cut to the
+    favourites, with a count of the rest.
+
+    A market disappears once it settles, since the books stop pricing it, so
+    an empty result shortly after the event is expected rather than an error.
+    """
+    books = resolve_bookmakers(bookmakers)
+
+    try:
+        client = get_client()
+        before = client.credits_used
+        response = client.get_futures(sport, list(market_types), list(books), season=season)
+        cost = client.credits_used - before
+    except Exception as exc:
+        return _explain(exc)
+
+    body = format_futures(response, books)
+    if body:
+        return f"{body}\n\n{credit_line(cost, _usage())}"
+
+    known = FUTURES_MARKETS.get(sport.upper(), ())
+    wrong = [key for key in market_types if known and key not in known]
+    lines = [f"No futures prices for {sport} on {', '.join(market_types)}. Nothing was charged."]
+    if wrong:
+        lines.append(
+            f"{', '.join(repr(k) for k in wrong)} is not a futures key for {sport}. "
+            f"Call list_sports({sport!r}) for the futures keys and retry with one of those."
+        )
+    else:
+        lines.append(
+            "The keys are valid, so these markets are not priced right now. A "
+            "market drops out once it settles, and next season's may not be "
+            "open yet."
+        )
+    lines.append(credit_line(cost, _usage()))
+    return "\n".join(lines)
 
 
 @server.tool()
@@ -391,8 +495,9 @@ def find_arbitrage(
 
     Fetches odds first, so it costs the same as get_odds:
     ceil(number of bookmakers / 5) credits for the single market. It defaults
-    to ten bookmakers, 2 credits, because an arbitrage only exists when books
-    disagree and five rarely spread far enough.
+    to every feed, about 6 credits, since an arbitrage only exists where books
+    disagree and the more of them priced, the more chances there are. A group
+    or names narrow it, as on get_odds.
 
     Works on any market whose bets have two sides: head_to_head and its period
     variants, soccer's draw_no_bet, totals, handicaps, team totals and player
@@ -407,7 +512,7 @@ def find_arbitrage(
     usually disappears while the second leg is being placed. Set it negative to
     see near misses.
     """
-    books = bookmakers or wide_bookmakers(sport)
+    books = resolve_bookmakers(bookmakers)
 
     try:
         response, cost = _fetch_odds(sport, [market], books)
@@ -417,6 +522,9 @@ def find_arbitrage(
 
     body = format_arbitrage(found, stake)
     if not body:
+        banded = _banded(response, market)
+        if banded:
+            return banded + "\n" + credit_line(cost, _usage())
         if not response.get("games"):
             return _no_games(sport, market) + "\n" + credit_line(cost, _usage())
         return (
@@ -458,8 +566,9 @@ def find_value_bets(
 
     Fetches odds first, so it costs the same as get_odds:
     ceil(number of bookmakers / 5) credits for the single market. Defaults to
-    ten bookmakers, 2 credits. Naming a book puts it in the request
-    automatically, since the calculation is impossible without it.
+    every feed, about 6 credits; a group or names narrow it, as on get_odds.
+    A book named as devig is added to the request automatically, since the
+    calculation is impossible without it.
 
     Same markets as find_arbitrage: head_to_head and its period variants,
     draw_no_bet, totals, handicaps, team totals and player props.
@@ -469,13 +578,10 @@ def find_value_bets(
     """
     consensus = devig == "all"
 
-    # The named book is seeded into the default spread rather than appended, so
-    # it stays at ten books and two credits. A consensus needs no particular
-    # book, only enough of them.
-    if bookmakers:
-        books = list(bookmakers) if consensus else list(with_sharp(bookmakers, devig))
-    else:
-        books = list(wide_bookmakers(sport, must_include=() if consensus else (devig,)))
+    # A consensus needs enough books rather than any one of them.
+    books = resolve_bookmakers(bookmakers)
+    if not consensus:
+        books = with_devig_book(books, devig)
 
     try:
         response, cost = _fetch_odds(sport, [market], books)
@@ -485,6 +591,9 @@ def find_value_bets(
 
     body = format_value_bets(found, devig)
     if not body:
+        banded = _banded(response, market)
+        if banded:
+            return banded + "\n" + credit_line(cost, _usage())
         if not response.get("games"):
             return _no_games(sport, market) + "\n" + credit_line(cost, _usage())
 

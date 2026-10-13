@@ -5,7 +5,7 @@ from mcp import Client
 
 from rapidoddsapi_mcp import defaults, formatting, server
 
-PAID_TOOLS = {"get_odds", "get_results", "find_arbitrage", "find_value_bets"}
+PAID_TOOLS = {"get_odds", "get_futures", "get_results", "find_arbitrage", "find_value_bets"}
 
 KEY = "oa_your_api_key_here"
 
@@ -59,13 +59,47 @@ ONE_GAME = {
 
 EMPTY = {"sport": "AFL", "games": []}
 
+FUTURES = {
+    "sport": "AFL",
+    "season": 2027,
+    "bookmakers": [
+        {
+            "name": "Sportsbet",
+            "markets": [
+                {
+                    "key": "brownlow_medal_winner",
+                    "outcomes": [
+                        {"name": "Nick Daicos", "price": 3.75},
+                        {"name": "Errol Gulden", "price": 9.0},
+                    ],
+                }
+            ],
+        },
+        {
+            "name": "TAB",
+            "markets": [
+                {
+                    "key": "brownlow_medal_winner",
+                    "outcomes": [
+                        {"name": "Errol Gulden", "price": 9.0},
+                        {"name": "Nick Daicos", "price": 3.5},
+                    ],
+                }
+            ],
+        },
+    ],
+}
+
+NO_FUTURES = {"sport": "AFL", "season": 2027, "bookmakers": []}
+
 
 class FakeClient:
     """Stands in for the SDK client, counting credits the way it does."""
 
-    def __init__(self, odds=EMPTY, usage=USAGE_FREE):
+    def __init__(self, odds=EMPTY, usage=USAGE_FREE, futures=NO_FUTURES):
         self.credits_used = 0
         self._odds = odds
+        self._futures = futures
         self._usage = usage
         self.calls = []
 
@@ -74,6 +108,12 @@ class FakeClient:
         if self._odds.get("games"):
             self.credits_used += len(market_types) * -(-len(bookmakers) // 5)
         return self._odds
+
+    def get_futures(self, sport, market_types, bookmakers, season=None):
+        self.calls.append((sport, tuple(market_types), tuple(bookmakers), season))
+        if self._futures.get("bookmakers"):
+            self.credits_used += len(market_types) * -(-len(bookmakers) // 5)
+        return self._futures
 
     def get_usage(self):
         return self._usage
@@ -98,26 +138,31 @@ def fake(monkeypatch):
 
 
 class TestDefaults:
-    def test_region_picks_local_books(self):
-        assert defaults.default_bookmakers("AFL") == defaults.AU_DEFAULT
-        assert defaults.default_bookmakers("NFL") == defaults.US_DEFAULT
-        assert defaults.default_bookmakers("EPL") == defaults.EU_DEFAULT
+    def test_nothing_named_means_every_feed(self):
+        """Feeds price across regions, so any smaller default would leave out
+        books that carry the game: Bet365 is the only NCAAF feed."""
+        from rapidoddsapi import BOOKMAKERS
 
-    def test_unknown_sport_falls_back(self):
-        assert defaults.default_bookmakers("QUIDDITCH") == defaults.EU_DEFAULT
+        assert defaults.resolve_bookmakers(None) == list(BOOKMAKERS)
+        assert defaults.resolve_bookmakers([]) == list(BOOKMAKERS)
 
-    def test_default_is_one_credit_group(self):
-        """Five books is ceil(5/5) = 1, the cheapest useful request."""
-        for sport in ("AFL", "NFL", "EPL"):
-            assert len(defaults.default_bookmakers(sport)) == 5
+    def test_groups_expand(self):
+        from rapidoddsapi import AU_BOOKMAKERS, EXCHANGES
 
-    def test_wide_is_wider_and_unique(self):
-        books = defaults.wide_bookmakers("AFL")
-        assert len(books) == defaults.ARBITRAGE_DEFAULT_COUNT
-        assert len(set(books)) == len(books)
+        assert defaults.resolve_bookmakers(["AU"]) == list(AU_BOOKMAKERS)
+        assert defaults.resolve_bookmakers(["exchanges"]) == list(EXCHANGES)
 
-    def test_wide_starts_from_the_region(self):
-        assert list(defaults.wide_bookmakers("AFL"))[:5] == list(defaults.AU_DEFAULT)
+    def test_groups_mix_with_names_without_duplicates(self):
+        """Bet365 is in both AU and US. Requested twice it would be paid for
+        twice in the credit count."""
+        books = defaults.resolve_bookmakers(["AU", "US", "Pinnacle", "Bet365"])
+
+        assert len(books) == len(set(books))
+        assert "Pinnacle" in books
+        assert "DraftKings" in books
+
+    def test_plain_names_pass_through(self):
+        assert defaults.resolve_bookmakers(["Sportsbet", "TAB"]) == ["Sportsbet", "TAB"]
 
     def test_all_bookmakers_is_every_feed(self):
         """The API has no bookmaker endpoint and does not reject bad names, so
@@ -127,23 +172,10 @@ class TestDefaults:
 
         assert defaults.all_bookmakers() == BOOKMAKERS
 
-    def test_the_list_is_not_filtered_by_region(self):
-        """Feeds price across regions, so an American book on the AFL is
-        normal and must not be hidden."""
-        from rapidoddsapi import AU_BOOKMAKERS, US_BOOKMAKERS
-
-        feeds = set(defaults.all_bookmakers())
-        assert set(AU_BOOKMAKERS) <= feeds
-        assert set(US_BOOKMAKERS) <= feeds
-
-    def test_every_default_is_a_real_feed(self):
-        for sport in ("AFL", "NFL", "EPL"):
-            assert set(defaults.default_bookmakers(sport)) <= set(defaults.all_bookmakers())
-
-    def test_with_sharp_adds_it_once(self):
-        assert defaults.SHARP_BOOKMAKER in defaults.with_sharp(["Sportsbet"])
+    def test_devig_book_is_added_once(self):
+        assert "Pinnacle" in defaults.with_devig_book(["Sportsbet"], "Pinnacle")
         already = ["Pinnacle", "Sportsbet"]
-        assert list(defaults.with_sharp(already)) == already
+        assert defaults.with_devig_book(already, "Pinnacle") == already
 
 
 class TestCreditLine:
@@ -217,6 +249,99 @@ class TestFormatOdds:
     def test_empty_response_formats_to_nothing(self):
         assert formatting.format_odds(EMPTY, ["Sportsbet"]) == ""
 
+    @staticmethod
+    def one_book(market, outcomes):
+        return {
+            "sport": "NFL",
+            "games": [
+                {
+                    "game": {
+                        "commence_time": "2026-10-19T17:00:00",
+                        "home_team": "Denver Broncos",
+                        "away_team": "Seattle Seahawks",
+                    },
+                    "bookmakers": [
+                        {"name": "DraftKings", "markets": [{"key": market, "outcomes": outcomes}]}
+                    ],
+                }
+            ],
+        }
+
+    def test_a_players_over_and_under_stay_apart(self):
+        """Grouped on player and line alone, Over and Under merged into one row
+        and its best price could be the other side."""
+        text = formatting.format_odds(
+            self.one_book(
+                "player_passing_yds",
+                [
+                    {"name": "Over", "price": 1.9, "point": 219.5, "player_name": "Sam Darnold"},
+                    {"name": "Under", "price": 1.88, "point": 219.5, "player_name": "Sam Darnold"},
+                ],
+            ),
+            ["DraftKings"],
+        )
+        assert "Sam Darnold Over 219.5" in text
+        assert "Sam Darnold Under 219.5" in text
+
+    def test_team_totals_stay_apart(self):
+        text = formatting.format_odds(
+            self.one_book(
+                "alternate_team_total_points",
+                [
+                    {"name": "Over", "price": 1.83, "point": 20.5, "team_name": "Denver Broncos"},
+                    {"name": "Over", "price": 1.95, "point": 20.5, "team_name": "Seattle Seahawks"},
+                ],
+            ),
+            ["DraftKings"],
+        )
+        assert "Denver Broncos Over 20.5" in text
+        assert "Seattle Seahawks Over 20.5" in text
+
+    def test_winning_margin_bands_stay_apart(self):
+        text = formatting.format_odds(
+            self.one_book(
+                "winning_margin",
+                [
+                    {"name": "Denver Broncos", "price": 3.3, "description": "Little Win 1-13"},
+                    {"name": "Denver Broncos", "price": 6.5, "description": "Big Win 14+"},
+                ],
+            ),
+            ["DraftKings"],
+        )
+        assert "Denver Broncos Little Win 1-13" in text
+        assert "Denver Broncos Big Win 14+" in text
+
+
+class TestFormatFutures:
+    def test_favourites_first_with_best_price(self):
+        text = formatting.format_futures(FUTURES, ["Sportsbet", "TAB"])
+
+        assert "season 2027" in text
+        lines = [line.strip() for line in text.splitlines()]
+        daicos = next(i for i, line in enumerate(lines) if line.startswith("Nick Daicos"))
+        gulden = next(i for i, line in enumerate(lines) if line.startswith("Errol Gulden"))
+        assert daicos < gulden
+        assert "3.75 (Sportsbet)" in lines[daicos]
+        assert "TAB 3.5" in lines[daicos]
+
+    def test_long_fields_are_cut(self):
+        runners = [{"name": f"Player {i}", "price": 2.0 + i} for i in range(40)]
+        response = {
+            "sport": "AFL",
+            "season": 2027,
+            "bookmakers": [
+                {"name": "TAB", "markets": [{"key": "brownlow_medal_winner", "outcomes": runners}]}
+            ],
+        }
+        text = formatting.format_futures(response, ["TAB"])
+
+        assert "Player 0 " in text
+        assert "Player 39" not in text
+        assert f"{40 - formatting.FUTURES_SHOWN} longer priced selections not shown" in text
+
+    def test_empty_formats_to_nothing(self):
+        assert formatting.format_futures(NO_FUTURES, ["TAB"]) == ""
+
 
 AFL_SCORE = {
     "home": {"team": "Adelaide Crows", "goals": 11, "behinds": 8, "points": 74},
@@ -266,7 +391,9 @@ class TestFormatResults:
 
 
 class TestGetOdds:
-    def test_defaults_cost_one_credit(self, fake):
+    def test_defaults_to_every_feed(self, fake):
+        from rapidoddsapi import BOOKMAKERS
+
         fake._odds = ONE_GAME
 
         text = server.get_odds("AFL")
@@ -274,8 +401,15 @@ class TestGetOdds:
         sport, markets, books = fake.calls[0]
         assert sport == "AFL"
         assert markets == ("head_to_head",)
-        assert books == defaults.AU_DEFAULT
-        assert "Cost: 1 credit." in text
+        assert books == tuple(BOOKMAKERS)
+        assert f"Cost: {-(-len(BOOKMAKERS) // 5)} credits." in text
+
+    def test_a_group_narrows_the_request(self, fake):
+        from rapidoddsapi import AU_BOOKMAKERS
+
+        server.get_odds("AFL", bookmakers=["AU"])
+
+        assert fake.calls[0][2] == tuple(AU_BOOKMAKERS)
 
     def test_empty_result_says_it_was_free(self, fake):
         text = server.get_odds("AFL")
@@ -312,10 +446,119 @@ class TestGetOdds:
     def test_cost_multiplies(self, fake):
         fake._odds = ONE_GAME
 
-        text = server.get_odds("AFL", market_types=["head_to_head", "alternate_lines"])
+        text = server.get_odds(
+            "AFL",
+            market_types=["head_to_head", "alternate_lines"],
+            bookmakers=["Sportsbet", "TAB", "Ladbrokes", "Bet365", "Pointsbet"],
+        )
 
         # 2 markets x ceil(5 / 5) = 2
         assert "Cost: 2 credits." in text
+
+
+class TestGetFutures:
+    def test_costs_the_odds_formula(self, fake):
+        fake._futures = FUTURES
+
+        text = server.get_futures("AFL", ["brownlow_medal_winner"], bookmakers=["Sportsbet", "TAB"])
+
+        sport, markets, books, season = fake.calls[0]
+        assert (sport, markets, books, season) == (
+            "AFL",
+            ("brownlow_medal_winner",),
+            ("Sportsbet", "TAB"),
+            None,
+        )
+        assert "Nick Daicos" in text
+        assert "Cost: 1 credit." in text
+
+    def test_season_is_passed_through(self, fake):
+        server.get_futures("AFL", ["premiership_winner"], season=2025)
+        assert fake.calls[0][3] == 2025
+
+    def test_a_match_key_is_called_out(self, fake):
+        text = server.get_futures("AFL", ["head_to_head"])
+
+        assert "'head_to_head' is not a futures key" in text
+        assert "Cost: 0 credits." in text
+
+    def test_a_valid_key_with_nothing_priced_blames_the_season(self, fake):
+        text = server.get_futures("AFL", ["brownlow_3_votes"])
+
+        assert "not priced right now" in text
+
+    def test_list_sports_shows_futures_keys(self, fake):
+        text = server.list_sports("AFL")
+
+        assert "futures, for get_futures not get_odds" in text
+        assert "  premiership_winner" in text
+
+    def test_a_sport_without_futures_lists_none(self, fake):
+        assert "futures" not in server.list_sports("NBA")
+
+
+BANDED = {
+    "sport": "AFLW",
+    "games": [
+        {
+            "game": {
+                "commence_time": "2026-10-17T02:05:00",
+                "home_team": "Adelaide Crows (W)",
+                "away_team": "Gold Coast SUNS (W)",
+            },
+            "bookmakers": [
+                {
+                    "name": book,
+                    "markets": [
+                        {
+                            "key": "winning_margin_24",
+                            "outcomes": [
+                                {
+                                    "name": "Adelaide Crows (W)",
+                                    "price": 3.3,
+                                    "description": "Little Win 1-24",
+                                },
+                                {
+                                    "name": "Adelaide Crows (W)",
+                                    "price": 12.5,
+                                    "description": "Big Win 25+",
+                                },
+                                {
+                                    "name": "Gold Coast SUNS (W)",
+                                    "price": 2.15,
+                                    "description": "Little Win 1-24",
+                                },
+                                {
+                                    "name": "Gold Coast SUNS (W)",
+                                    "price": 3.6,
+                                    "description": "Big Win 25+",
+                                },
+                            ],
+                        }
+                    ],
+                }
+                for book in ("Sportsbet", "TAB")
+            ],
+        }
+    ],
+}
+
+
+class TestBandedMarkets:
+    def test_arbitrage_explains_rather_than_reporting_none(self, fake):
+        """Read as "no arbitrage", a market that can never be paired looks like
+        one that was checked and came up empty."""
+        fake._odds = BANDED
+
+        text = server.find_arbitrage("AFLW", market="winning_margin_24")
+
+        assert "priced in bands" in text
+        assert "No arbitrage" not in text
+
+    def test_value_bets_explain_too(self, fake):
+        fake._odds = BANDED
+
+        assert "priced in bands" in server.find_value_bets("AFLW", market="winning_margin_24")
 
 
 class TestValueBets:
@@ -326,15 +569,10 @@ class TestValueBets:
 
         assert "Pinnacle" in fake.calls[0][2]
 
-    def test_a_named_book_does_not_push_the_default_over_a_credit_group(self, fake):
-        """Appending it to ten would make eleven, and ceil(11 / 5) is 3 credits
-        where the description promises 2."""
-        server.find_value_bets("AFL", devig="Pinnacle")
+    def test_a_named_book_joins_a_group(self, fake):
+        server.find_value_bets("AFL", bookmakers=["AU"], devig="Pinnacle")
 
-        books = fake.calls[0][2]
-        assert "Pinnacle" in books
-        assert len(books) == defaults.ARBITRAGE_DEFAULT_COUNT
-        assert -(-len(books) // 5) == 2
+        assert "Pinnacle" in fake.calls[0][2]
 
     def test_a_consensus_forces_no_particular_book(self, fake):
         """The default needs enough books, not any one of them, so nothing is
@@ -385,16 +623,18 @@ class TestProtocol:
 
         return asyncio.run(listed())
 
-    def test_exactly_five_tools(self):
-        """Five clearly named tools, so the model picks the right one. Adding a
-        sixth is a decision, not an accident."""
+    def test_exactly_six_tools(self):
+        """Six clearly named tools, so the model picks the right one. Adding a
+        seventh is a decision, not an accident."""
         assert {tool.name for tool in self.tools()} == PAID_TOOLS | {"list_sports"}
 
     def test_sport_is_required_on_every_paid_tool(self):
         """Nothing may run without an explicit sport, or a vague question could
         fan out across everything."""
         for tool in self.tools():
-            if tool.name in PAID_TOOLS:
+            if tool.name == "get_futures":
+                assert tool.input_schema["required"] == ["sport", "market_types"]
+            elif tool.name in PAID_TOOLS:
                 assert tool.input_schema["required"] == ["sport"]
 
     def test_only_list_sports_needs_nothing(self):

@@ -1,7 +1,7 @@
 # rapidoddsapi-mcp
 
 MCP server for [RapidOddsAPI](https://rapidoddsapi.com). Gives an AI assistant
-bookmaker odds, live scores, arbitrage and value bets.
+bookmaker odds, futures, live scores, arbitrage and value bets.
 
 Built on the official [`rapidoddsapi`](https://pypi.org/project/rapidoddsapi)
 Python SDK.
@@ -46,6 +46,7 @@ It speaks stdio.
 |---|---|
 | `list_sports(sport=)` | 0 |
 | `get_odds(sport, market_types=, bookmakers=)` | `market_types x ceil(bookmakers / 5)` |
+| `get_futures(sport, market_types, bookmakers=, season=)` | `market_types x ceil(bookmakers / 5)` |
 | `get_results(sport, status=, include=)` | 1 |
 | `find_arbitrage(sport, market=, bookmakers=, min_profit=, stake=)` | `ceil(bookmakers / 5)` |
 | `find_value_bets(sport, market=, bookmakers=, min_edge=, devig=)` | `ceil(bookmakers / 5)` |
@@ -55,19 +56,21 @@ is free. Every response ends with what it cost and what is left.
 
 ## Credits
 
-The free tier is 250 credits for the life of the account, with no monthly
-reset, so the defaults are deliberately narrow:
+Credits are one per market type per five bookmakers.
 
 - A sport is always required. There is no way to request every sport at once.
-- Bookmakers default to five, one credit group, chosen for the sport's region.
 - Market types default to one.
+- Bookmakers default to every feed, about 6 credits per market type. Feeds
+  price across regions, an Australian book carries the NFL, so a regional
+  default would leave out books that price the game.
 
-That makes a typical question cost 1 credit. Both arguments multiply, so asking
-for nine market types across eighteen bookmakers is 36. The tool descriptions
-say so, which is what keeps the model from doing it uninvited.
+To narrow a request, name books or a group: `"AU"`, `"US"`, `"EU"` or
+`"EXCHANGES"`, mixable with names, as in `["AU", "Pinnacle"]`. Asking for
+"Australian books only" is enough; the model passes the group.
 
-`find_arbitrage` and `find_value_bets` default to ten bookmakers, 2 credits,
-because both need books that disagree and five rarely spread far enough.
+The free tier is 250 credits for the life of the account, with no monthly
+reset. The tool descriptions state the cost, so the model can say what a
+request will cost before making an expensive one.
 
 ## Markets
 
@@ -88,6 +91,17 @@ so on thin markets naming a book finds bets that averaging cannot.
 
 Market keys vary by sport. `list_sports(sport)` returns the valid ones and
 costs nothing.
+
+Winning margin and other markets priced in bands cannot be paired, so
+`find_arbitrage` and `find_value_bets` say so rather than reporting that they
+found nothing. `get_odds` still compares them across books.
+
+## Futures
+
+Season-long outrights, such as the Brownlow Medal and AFL Premiership, come
+from `get_futures` rather than `get_odds`. They have their own market keys,
+which `list_sports("AFL")` lists separately from the match ones. Long fields
+are cut to the favourites, with a count of the rest.
 
 ## Bookmakers
 
