@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=2.0.0",
-    "rapidoddsapi>=0.4.0",
+    "rapidoddsapi>=0.5.0",
     "truststore>=0.10",
 ]
 

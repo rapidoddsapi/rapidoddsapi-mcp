@@ -65,7 +65,7 @@ what is left.
 Cost multiplies with both the number of market types and the number of
 bookmakers, at one credit per market per five bookmakers.
   - A sport is always required. There is no way to ask for every sport at once.
-  - With no bookmakers named, every feed is requested, about 6 credits per
+  - With no bookmakers named, every feed is requested, about 7 credits per
     market type. When the user names a region or books, pass those instead:
     "AU", "US", "EU" and "EXCHANGES" are accepted as groups alongside plain
     names, so ["AU"] or ["US", "Pinnacle"] works. On the free tier, say what
@@ -324,8 +324,8 @@ def get_odds(
 
     Cost: number of market types x ceil(number of bookmakers / 5) credits,
     charged only when games come back. The default, one market across every
-    feed, is about 6 credits. Both arguments multiply, so nine market types
-    across every feed is about 54.
+    feed, is about 7 credits. Both arguments multiply, so nine market types
+    across every feed is about 63.
 
     market_types defaults to head_to_head, the plain winner market. Soccer has
     no head_to_head because of the draw, so use head_to_head_3_way or
@@ -399,7 +399,7 @@ def get_futures(
 
     Cost: number of market types x ceil(number of bookmakers / 5) credits,
     charged only when prices come back. bookmakers works as on get_odds: every
-    feed by default, about 6 credits per market, or a group or names.
+    feed by default, about 7 credits per market, or a group or names.
 
     season defaults to the latest one stored. Long fields are cut to the
     favourites, with a count of the rest.
@@ -495,7 +495,7 @@ def find_arbitrage(
 
     Fetches odds first, so it costs the same as get_odds:
     ceil(number of bookmakers / 5) credits for the single market. It defaults
-    to every feed, about 6 credits, since an arbitrage only exists where books
+    to every feed, about 7 credits, since an arbitrage only exists where books
     disagree and the more of them priced, the more chances there are. A group
     or names narrow it, as on get_odds.
 
@@ -566,7 +566,7 @@ def find_value_bets(
 
     Fetches odds first, so it costs the same as get_odds:
     ceil(number of bookmakers / 5) credits for the single market. Defaults to
-    every feed, about 6 credits; a group or names narrow it, as on get_odds.
+    every feed, about 7 credits; a group or names narrow it, as on get_odds.
     A book named as devig is added to the request automatically, since the
     calculation is impossible without it.
 

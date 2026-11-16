@@ -2,6 +2,18 @@
 
 Notable changes to this package. Versions follow [semantic versioning](https://semver.org).
 
+## 0.5.0
+
+Needs the SDK at 0.5.0 or later.
+
+- AllBets and TABtouch join the `ALL` and `AU` bookmaker shorthands
+- HardRock, Circa and BetOnline join `ALL` and `US`, and Novig joins `ALL`
+  and `EXCHANGES`
+- UFC and RLWC are known sports, UCL and A_LEAGUE are no longer marked
+  upcoming, and NBA has live scores
+- Every feed is now 34 names, so the default (every feed) costs about 7
+  credits per market type instead of 6
+
 ## 0.4.0
 
 Needs the SDK at 0.4.0 or later.

@@ -60,7 +60,7 @@ Credits are one per market type per five bookmakers.
 
 - A sport is always required. There is no way to request every sport at once.
 - Market types default to one.
-- Bookmakers default to every feed, about 6 credits per market type. Feeds
+- Bookmakers default to every feed, about 7 credits per market type. Feeds
   price across regions, an Australian book carries the NFL, so a regional
   default would leave out books that price the game.
 
