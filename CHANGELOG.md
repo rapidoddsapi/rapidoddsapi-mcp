@@ -2,6 +2,11 @@
 
 Notable changes to this package. Versions follow [semantic versioning](https://semver.org).
 
+## 0.5.1
+
+- Listed on the official MCP Registry as
+  `io.github.rapidoddsapi/rapidoddsapi-mcp`. No code changes
+
 ## 0.5.0
 
 Needs the SDK at 0.5.0 or later.

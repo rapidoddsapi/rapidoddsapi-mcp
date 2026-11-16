@@ -1,5 +1,7 @@
 # rapidoddsapi-mcp
 
+<!-- mcp-name: io.github.rapidoddsapi/rapidoddsapi-mcp -->
+
 MCP server for [RapidOddsAPI](https://rapidoddsapi.com). Gives an AI assistant
 bookmaker odds, futures, live scores, arbitrage and value bets.
 
